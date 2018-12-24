@@ -31,31 +31,34 @@ from tensorflow.python.ops import math_ops
 # TODO(sibyl-vie3Poto,felixyu): add an option to control whether the parameters in the
 # kernel map are trainable.
 class RandomFourierFeatureMapper(dkm.DenseKernelMapper):
-  """Class that implements Random Fourier Feature Mapping.
+  r"""Class that implements Random Fourier Feature Mapping (RFFM) in TensorFlow.
 
   The RFFM mapping is used to approximate the Gaussian (RBF) kernel:
-    exp(-||x-y||_2^2 / (2 * sigma^2))
+  $$(exp(-||x-y||_2^2 / (2 * \sigma^2))$$
 
   The implementation of RFFM is based on the following paper:
   "Random Features for Large-Scale Kernel Machines" by Ali Rahimi and Ben Recht.
   (link: https://people.eecs.berkeley.edu/~brecht/papers/07.rah.rec.nips.pdf)
 
-  The mapping uses a matrix Omega in R^{d x D} and a bias vector b in R^D where
-  d is the input dimension (number of dense input features) and D is the output
-  dimension (i.e., dimension of the feature space the input is mapped to). Each
-  entry of Omega is sampled i.i.d. from a (scaled) Gaussian distribution and
-  each entry of the bias vector is sampled i.i.d. and uniformly from [0, 2*pi].
+  The mapping uses a matrix \\(\Omega \in R^{d x D}\\) and a bias vector
+  \\(b \in R^D\\) where \\(d\\) is the input dimension (number of dense input
+  features) and \\(D\\) is the output dimension (i.e., dimension of the feature
+  space the input is mapped to). Each entry of \\(\Omega\\) is sampled i.i.d.
+  from a (scaled) Gaussian distribution and each entry of \\(b\\) is sampled
+  independently and uniformly from [0, \\(2 * \pi\\)].
 
-  For a single input feature vector x in R^d, its RFFM is defined as:
-              sqrt(2/D) * cos(x * Omega + b)
-  where cos is the element-wise cosine function and x, b are represented as row
-  vectors. The aforementioned paper shows that the linear kernel of RFFM-mapped
-  vectors approximates the Gaussian kernel of the initial vectors.
+  For a single input feature vector \\(x \in R^d\\), its RFFM is defined as:
+  $$\sqrt(2/D) * cos(x * \Omega + b)$$
+
+  where \\(cos\\) is the element-wise cosine function and \\(x, b\\) are
+  represented as row vectors. The aforementioned paper shows that the linear
+  kernel of RFFM-mapped vectors approximates the Gaussian kernel of the initial
+  vectors.
 
   """
 
   def __init__(self, input_dim, output_dim, stddev=1.0, seed=1, name=None):
-    """Constructs a RandomFourierFeatureMapper instance.
+    r"""Constructs a RandomFourierFeatureMapper instance.
 
     Args:
       input_dim: The dimension (number of features) of the tensors to be mapped.
@@ -63,11 +66,11 @@ class RandomFourierFeatureMapper(dkm.DenseKernelMapper):
       stddev: The standard deviation of the Gaussian kernel to be approximated.
         The error of the classifier trained using this approximation is very
         sensitive to this parameter.
-      seed: An integer used to initialize the parameters (Omega and bias) of the
-        mapper. For repeatable sequences across different invocations of the
-        mapper object (for instance, to ensure consistent mapping both at
-        training and eval/inference if these happen in different invocations),
-        set this to the same integer.
+      seed: An integer used to initialize the parameters (\\(\Omega\\) and
+        \\(b\\)) of the mapper. For repeatable sequences across different
+        invocations of the mapper object (for instance, to ensure consistent
+        mapping both at training and eval/inference if these happen in
+        different invocations), set this to the same integer.
       name: name for the mapper object.
     """
     # TODO(sibyl-vie3Poto): Maybe infer input_dim and/or output_dim (if not explicitly
@@ -83,13 +86,13 @@ class RandomFourierFeatureMapper(dkm.DenseKernelMapper):
 
   @property
   def name(self):
-    """Returns a name for the RandomFourierFeatureMapper instance.
+    """Returns a name for the `RandomFourierFeatureMapper` instance.
 
-    If the name provided in the constructor is None, then the object's unique id
-    is returned.
+    If the name provided in the constructor is `None`, then the object's unique
+    id is returned.
 
     Returns:
-      A name for the RandomFourierFeatureMapper instance.
+      A name for the `RandomFourierFeatureMapper` instance.
     """
     return self._name or str(id(self))
 
@@ -105,15 +108,15 @@ class RandomFourierFeatureMapper(dkm.DenseKernelMapper):
     """Maps each row of input_tensor using random Fourier features.
 
     Args:
-      input_tensor: tensor containing input features. It's shape is
+      input_tensor: a `Tensor` containing input features. It's shape is
       [batch_size, self._input_dim].
 
     Returns:
-      A tensor of shape [batch_size, self._output_dim] containing RFFM-mapped
+      A `Tensor` of shape [batch_size, self._output_dim] containing RFFM-mapped
       features.
 
     Raises:
-      InvalidShapeError: if the shape of the input_tensor is inconsistent with
+      InvalidShapeError: if the shape of the `input_tensor` is inconsistent with
         expected input dimension.
     """
     input_tensor_shape = input_tensor.get_shape()

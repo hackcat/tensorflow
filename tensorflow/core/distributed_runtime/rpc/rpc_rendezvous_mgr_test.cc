@@ -50,6 +50,8 @@ namespace {
 // Fake cache implementation for WorkerEnv.
 class DummyWorkerCache : public WorkerCacheInterface {
   void ListWorkers(std::vector<string>* workers) const override {}
+  void ListWorkersInJob(const string& job_name,
+                        std::vector<string>* workers) const override {}
   WorkerInterface* CreateWorker(const string& target) override {
     return nullptr;
   }
@@ -66,11 +68,11 @@ class RpcRendezvousMgrTest : public ::testing::Test {
  protected:
   RpcRendezvousMgrTest()
       : cache_(new DummyWorkerCache),
-        worker_session_("/job:mnist/replica:1/task:2",
+        worker_session_("rpc_session", "/job:mnist/replica:1/task:2",
                         std::unique_ptr<WorkerCacheInterface>(cache_),
-                        std::unique_ptr<RendezvousMgrInterface>(),
+                        std::unique_ptr<DeviceMgr>(),
                         std::unique_ptr<GraphMgr>()),
-        rmgr_(&env, worker_session_.worker_name, cache_) {
+        rmgr_(&env) {
     env.env = Env::Default();
   }
 
@@ -87,7 +89,8 @@ TEST_F(RpcRendezvousMgrTest, LocalSendRecv) {
       "/job:mnist/replica:1/task:2/cpu:0", 7890,
       "/job:mnist/replica:1/task:2/cpu:1", "foo", FrameAndIter(0, 0)));
   {
-    Rendezvous* rendez = rmgr_.Find(step_id);
+    RemoteRendezvous* rendez = rmgr_.Find(step_id);
+    TF_ASSERT_OK(rendez->Initialize(&worker_session_));
     core::ScopedUnref unref(rendez);
     Rendezvous::Args args;
     TF_ASSERT_OK(rendez->Send(key, args, V("peach"), false));
@@ -107,7 +110,7 @@ TEST_F(RpcRendezvousMgrTest, LocalAbort) {
       "/job:mnist/replica:1/task:2/cpu:1", "foo", FrameAndIter(0, 0)));
   {  // Explicit Abort().
     const int64 step_id = 123;
-    Rendezvous* rendez = rmgr_.Find(step_id);
+    RemoteRendezvous* rendez = rmgr_.Find(step_id);
     core::ScopedUnref unref(rendez);
     SchedClosure([this, rendez]() {
       env.env->SleepForMicroseconds(100 * 1000);
@@ -116,11 +119,12 @@ TEST_F(RpcRendezvousMgrTest, LocalAbort) {
     Tensor val(DT_STRING);
     bool val_dead = false;
     Rendezvous::Args args;
+    TF_ASSERT_OK(rendez->Initialize(&worker_session_));
     EXPECT_TRUE(errors::IsAborted(rendez->Recv(key, args, &val, &val_dead)));
   }
   {  // Cleanup causes Abort().
     const int64 step_id = 321;
-    Rendezvous* rendez = rmgr_.Find(step_id);
+    RemoteRendezvous* rendez = rmgr_.Find(step_id);
     core::ScopedUnref unref(rendez);
     SchedClosure([this, step_id]() {
       env.env->SleepForMicroseconds(100 * 1000);
@@ -129,6 +133,7 @@ TEST_F(RpcRendezvousMgrTest, LocalAbort) {
     Tensor val(DT_STRING);
     bool val_dead = false;
     Rendezvous::Args args;
+    TF_ASSERT_OK(rendez->Initialize(&worker_session_));
     EXPECT_TRUE(errors::IsAborted(rendez->Recv(key, args, &val, &val_dead)));
   }
 }
@@ -139,7 +144,8 @@ TEST_F(RpcRendezvousMgrTest, CleanupAll) {
       "/job:mnist/replica:1/task:2/cpu:1", "foo", FrameAndIter(0, 0)));
   {
     const int64 step_id = 123;
-    Rendezvous* rendez = rmgr_.Find(step_id);
+    RemoteRendezvous* rendez = rmgr_.Find(step_id);
+    TF_ASSERT_OK(rendez->Initialize(&worker_session_));
     core::ScopedUnref unref(rendez);
     Rendezvous::Args args;
     TF_ASSERT_OK(rendez->Send(key, args, V("peach"), false));
@@ -168,10 +174,11 @@ TEST_F(RpcRendezvousMgrTest, TransferDummyDeviceContext) {
       "/job:mnist/replica:1/task:2/cpu:0", 7890,
       "/job:mnist/replica:1/task:2/cpu:1", "foo", FrameAndIter(0, 0)));
   {
-    Rendezvous* rendez = rmgr_.Find(step_id);
+    RemoteRendezvous* rendez = rmgr_.Find(step_id);
     core::ScopedUnref unref(rendez);
     Rendezvous::Args args;
     args.device_context = dc;
+    TF_ASSERT_OK(rendez->Initialize(&worker_session_));
     TF_ASSERT_OK(rendez->Send(key, args, V("peach"), false));
   }
   {

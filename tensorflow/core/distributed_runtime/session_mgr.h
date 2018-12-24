@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_SESSION_MGR_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_SESSION_MGR_H_
+#ifndef TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_SESSION_MGR_H_
+#define TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_SESSION_MGR_H_
 
 #include <functional>
 
@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/protobuf/tensorflow_server.pb.h"
+#include "tensorflow/core/protobuf/worker.pb.h"
 
 namespace tensorflow {
 
@@ -29,6 +30,8 @@ class WorkerCacheInterface;
 struct WorkerEnv;
 
 // SessionMgr keeps track of information related to a given session.
+//
+// SessionMgr runs on the workers.
 //
 // SessionMgr is threadsafe.
 class SessionMgr {
@@ -39,62 +42,60 @@ class SessionMgr {
   explicit SessionMgr(
       WorkerEnv* worker_env, const string& default_worker_name,
       std::unique_ptr<WorkerCacheInterface> default_worker_cache,
-      std::unique_ptr<RendezvousMgrInterface> default_rendezvous_mgr,
       WorkerCacheFactory worker_cache_factory);
   ~SessionMgr() {}
 
   // Allocates state for a new session.
-  Status CreateSession(const string& session, const ServerDef& server_def);
+  Status CreateSession(const string& session, const ServerDef& server_def,
+                       bool isolate_session_state);
 
   // Locates the worker session for a given session handle
-  WorkerSession* WorkerSessionForSession(const string& session);
-  WorkerSession* LegacySession();
-
-  // Locates the worker session for a given graph handle
-  WorkerSession* WorkerSessionForGraphHandle(const string& graph_handle);
-  void AssociateGraphWithSession(const string& session,
-                                 const string& graph_handle);
-  void DisassociateGraphFromSession(const string& graph_handle);
-
-  // Locates a worker session for a given step id
-  WorkerSession* WorkerSessionForStepId(const int64 step_id);
-  void AssociateStepIdWithGraph(const string& graph_handle,
-                                const int64 step_id);
-  void DisassociateStepIdFromGraph(const int64 step_id);
+  Status WorkerSessionForSession(const string& session_handle,
+                                 std::shared_ptr<WorkerSession>* out_session);
+  std::shared_ptr<WorkerSession> LegacySession();
 
   Status DeleteSession(const string& session);
 
   static string WorkerNameFromServerDef(const ServerDef& server_def);
 
- private:
-  // Private constructor to work around std::unique_ptr ownership issues.
-  explicit SessionMgr(
-      WorkerEnv* worker_env, const string& default_worker_name,
-      std::unique_ptr<WorkerCacheInterface> default_worker_cache,
-      RendezvousMgrInterface* default_rendezvous_mgr,
-      WorkerCacheFactory worker_cache_factory);
+  void SetLogging(bool active);
 
-  const WorkerEnv* const worker_env_;  // Not owned.
-  WorkerSession legacy_session_;
+  void RetrieveLogs(tensorflow::int64 step_id, LoggingResponse* response);
+
+  void ClearLogs();
+
+ private:
+  WorkerEnv* const worker_env_;  // Not owned.
+
+  // A note about destruction:
+  // We must delete graph_mgr before device_mgr, due to shared
+  // ownership of OpKernels in the executors. (The graph_mgr will
+  // free all stateless OpKernels, and pass over borrowed stateful
+  // OpKernels, which are also held in their respective devices'
+  // OpSegments.)
+  //
+  // legacy_session_ owns the worker_env_.device_mgr, and so we must ensure
+  // that sessions_'s WorkerSessions are deleted (which do not own the
+  // underlying devices, but instead own RenamedDevices) before
+  // legacy_session_ is deleted. Further, we must ensure that WorkerSession's
+  // device_mgr is deleted after WorkerSession's graph_mgr.
+
+  std::unique_ptr<WorkerCacheInterface> default_worker_cache_;
+  std::shared_ptr<WorkerSession> legacy_session_;
+
+  bool is_logging_active_ = false;
 
   const WorkerCacheFactory worker_cache_factory_;
 
-  WorkerSession* WorkerSessionForSessionUnlocked(const string& session)
-      EXCLUSIVE_LOCKS_REQUIRED(mu_);
-  WorkerSession* WorkerSessionForGraphHandleUnlocked(const string& graph_handle)
+  Status WorkerSessionForSessionLocked(
+      const string& session_handle, std::shared_ptr<WorkerSession>* out_session)
       EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   mutex mu_;
   // A map from session identifier to internal session structure.
-  std::map<string, std::unique_ptr<WorkerSession>> sessions_ GUARDED_BY(mu_);
-
-  // A map from graph handles to the session that they belong to.
-  std::map<string, string> sessions_by_graph_handle_ GUARDED_BY(mu_);
-
-  // A map from globally-unique step id's to the corresponding graph handles.
-  std::map<int64, string> graphs_by_step_id_ GUARDED_BY(mu_);
+  std::map<string, std::shared_ptr<WorkerSession>> sessions_ GUARDED_BY(mu_);
 };
 
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_SESSION_MGR_H_
+#endif  // TENSORFLOW_CORE_DISTRIBUTED_RUNTIME_SESSION_MGR_H_

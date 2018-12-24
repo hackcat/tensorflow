@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
+#include "tensorflow/core/lib/core/bits.h"
 
 namespace tensorflow {
 
@@ -32,7 +33,7 @@ Status DecodeWavShapeFn(InferenceContext* c) {
   DimensionHandle channels_dim;
   int32 desired_channels;
   TF_RETURN_IF_ERROR(c->GetAttr("desired_channels", &desired_channels));
-  if (desired_channels == 0) {
+  if (desired_channels == -1) {
     channels_dim = c->UnknownDim();
   } else {
     if (desired_channels < 0) {
@@ -44,7 +45,7 @@ Status DecodeWavShapeFn(InferenceContext* c) {
   DimensionHandle samples_dim;
   int32 desired_samples;
   TF_RETURN_IF_ERROR(c->GetAttr("desired_samples", &desired_samples));
-  if (desired_samples == 0) {
+  if (desired_samples == -1) {
     samples_dim = c->UnknownDim();
   } else {
     if (desired_samples < 0) {
@@ -61,8 +62,61 @@ Status DecodeWavShapeFn(InferenceContext* c) {
 Status EncodeWavShapeFn(InferenceContext* c) {
   ShapeHandle unused;
   TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 2, &unused));
-  TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 1, &unused));
+  TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
   c->set_output(0, c->Scalar());
+  return Status::OK();
+}
+
+Status SpectrogramShapeFn(InferenceContext* c) {
+  ShapeHandle input;
+  TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 2, &input));
+  int32 window_size;
+  TF_RETURN_IF_ERROR(c->GetAttr("window_size", &window_size));
+  int32 stride;
+  TF_RETURN_IF_ERROR(c->GetAttr("stride", &stride));
+
+  DimensionHandle input_length = c->Dim(input, 0);
+  DimensionHandle input_channels = c->Dim(input, 1);
+
+  DimensionHandle output_length;
+  if (!c->ValueKnown(input_length)) {
+    output_length = c->UnknownDim();
+  } else {
+    const int64 input_length_value = c->Value(input_length);
+    const int64 length_minus_window = (input_length_value - window_size);
+    int64 output_length_value;
+    if (length_minus_window < 0) {
+      output_length_value = 0;
+    } else {
+      output_length_value = 1 + (length_minus_window / stride);
+    }
+    output_length = c->MakeDim(output_length_value);
+  }
+
+  DimensionHandle output_channels =
+      c->MakeDim(1 + NextPowerOfTwo(window_size) / 2);
+  c->set_output(0,
+                c->MakeShape({input_channels, output_length, output_channels}));
+  return Status::OK();
+}
+
+Status MfccShapeFn(InferenceContext* c) {
+  ShapeHandle spectrogram;
+  TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 3, &spectrogram));
+  ShapeHandle unused;
+  TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 0, &unused));
+
+  int32 dct_coefficient_count;
+  TF_RETURN_IF_ERROR(
+      c->GetAttr("dct_coefficient_count", &dct_coefficient_count));
+
+  DimensionHandle spectrogram_channels = c->Dim(spectrogram, 0);
+  DimensionHandle spectrogram_length = c->Dim(spectrogram, 1);
+
+  DimensionHandle output_channels = c->MakeDim(dct_coefficient_count);
+
+  c->set_output(0, c->MakeShape({spectrogram_channels, spectrogram_length,
+                                 output_channels}));
   return Status::OK();
 }
 
@@ -74,51 +128,30 @@ REGISTER_OP("DecodeWav")
     .Attr("desired_samples: int = -1")
     .Output("audio: float")
     .Output("sample_rate: int32")
-    .SetShapeFn(DecodeWavShapeFn)
-    .Doc(R"doc(
-Decode a 16-bit PCM WAV file to a float tensor.
-
-The -32768 to 32767 signed 16-bit values will be scaled to -1.0 to 1.0 in float.
-
-When desired_channels is set, if the input contains fewer channels than this
-then the last channel will be duplicated to give the requested number, else if
-the input has more channels than requested then the additional channels will be
-ignored.
-
-If desired_samples is set, then the audio will be cropped or padded with zeroes
-to the requested length.
-
-The first output contains a Tensor with the content of the audio samples. The
-lowest dimension will be the number of channels, and the second will be the
-number of samples. For example, a ten-sample-long stereo WAV file should give an
-output shape of [10, 2].
-
-contents: The WAV-encoded audio, usually from a file.
-desired_channels: Number of sample channels wanted.
-desired_samples: Length of audio requested.
-audio: 2-D with shape `[length, channels]`.
-sample_rate: Scalar holding the sample rate found in the WAV header.
-)doc");
+    .SetShapeFn(DecodeWavShapeFn);
 
 REGISTER_OP("EncodeWav")
     .Input("audio: float")
     .Input("sample_rate: int32")
     .Output("contents: string")
-    .SetShapeFn(EncodeWavShapeFn)
-    .Doc(R"doc(
-Encode audio data using the WAV file format.
+    .SetShapeFn(EncodeWavShapeFn);
 
-This operation will generate a string suitable to be saved out to create a .wav
-audio file. It will be encoded in the 16-bit PCM format. It takes in float
-values in the range -1.0f to 1.0f, and any outside that value will be clamped to
-that range.
+REGISTER_OP("AudioSpectrogram")
+    .Input("input: float")
+    .Attr("window_size: int")
+    .Attr("stride: int")
+    .Attr("magnitude_squared: bool = false")
+    .Output("spectrogram: float")
+    .SetShapeFn(SpectrogramShapeFn);
 
-`audio` is a 2-D float Tensor of shape `[length, channels]`.
-`sample_rate` is a scalar Tensor holding the rate to use (e.g. 44100).
-
-audio: 2-D with shape `[length, channels]`.
-sample_rate: Scalar containing the sample frequency.
-contents: 0-D. WAV-encoded file contents.
-)doc");
+REGISTER_OP("Mfcc")
+    .Input("spectrogram: float")
+    .Input("sample_rate: int32")
+    .Attr("upper_frequency_limit: float = 4000")
+    .Attr("lower_frequency_limit: float = 20")
+    .Attr("filterbank_channel_count: int = 40")
+    .Attr("dct_coefficient_count: int = 13")
+    .Output("output: float")
+    .SetShapeFn(MfccShapeFn);
 
 }  // namespace tensorflow
